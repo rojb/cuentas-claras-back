@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: tap-splitter-db
+    environment:
+      POSTGRES_USER: splitter
+      POSTGRES_PASSWORD: splitter
+      POSTGRES_DB: splitter
+    # Host port is 55432 so it does not clash with a local Postgres on 5432.
+    ports:
+      - '55432:5432'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # Every .sql in here runs once, in order, the first time the volume is
+      # created. To re-run them from scratch: docker compose down -v
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U splitter -d splitter']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db-data:
