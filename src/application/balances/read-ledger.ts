@@ -1,4 +1,4 @@
-import type { Database } from '../../infrastructure/db/pool.js';
+import type { Queryable } from '../../infrastructure/db/pool.js';
 import {
   listExpenses,
   listShares,
@@ -24,9 +24,13 @@ import { requireMembership } from '../groups/membership.js';
  * That is also why "was this debt paid in full or in part?" needs no code
  * anywhere: a partial payment is just a transfer for less than what was
  * owed, and the balance that comes back already says what is left.
+ *
+ * Takes a Queryable, not a Pool, so that a caller who needs these numbers to
+ * still be true by the time it writes something — leaving a group is the one
+ * that does — can read them inside its own transaction.
  */
 export async function calculateGroupBalances(
-  db: Database,
+  db: Queryable,
   groupId: string,
   userId: string,
 ): Promise<Balance[]> {
@@ -78,7 +82,7 @@ export async function calculateGroupBalances(
 
 /** Who should pay whom, and how much, to leave the group square. */
 export async function calculateGroupSettlement(
-  db: Database,
+  db: Queryable,
   groupId: string,
   userId: string,
 ): Promise<Transfer[]> {

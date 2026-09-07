@@ -32,11 +32,13 @@ export async function replaceExpense(
   actor: string,
   input: CreateExpenseInput,
 ): Promise<CreatedExpense> {
-  // Everything that can be rejected is decided before the transaction opens,
-  // so a bad split never gets as far as voiding the good expense.
-  const prepared = await prepareExpense(db, groupId, actor, input);
+  return withTransaction(db, async (tx) => {
+    // Still the first thing that happens, so a bad split never gets as far as
+    // voiding the good expense. It runs INSIDE the transaction now because it
+    // locks the memberships it validates, and a lock only lasts as long as the
+    // transaction that took it.
+    const prepared = await prepareExpense(tx, groupId, actor, input);
 
-  const expense = await withTransaction(db, async (tx) => {
     if (!(await voidExpense(tx, groupId, expenseId))) {
       // Already deleted, or never existed, or belongs to another group. The
       // membership check upstream means we can say so without leaking
@@ -44,8 +46,8 @@ export async function replaceExpense(
       throw notFound('expense_not_found', 'that expense does not exist');
     }
 
-    return writeExpense(tx, groupId, actor, input, prepared);
-  });
+    const expense = await writeExpense(tx, groupId, actor, input, prepared);
 
-  return { expense, shares: prepared.shares };
+    return { expense, shares: prepared.shares };
+  });
 }

@@ -1,5 +1,5 @@
-import type { Database } from '../../infrastructure/db/pool.js';
-import { listGroupMembers } from '../../infrastructure/db/groups-repository.js';
+import { withTransaction, type Database } from '../../infrastructure/db/pool.js';
+import { lockActiveGroupMembers } from '../../infrastructure/db/groups-repository.js';
 import {
   insertPayment,
   listPayments,
@@ -36,8 +36,6 @@ export async function recordPayment(
   createdBy: string,
   input: RecordPaymentInput,
 ): Promise<{ payment: PaymentRow }> {
-  await requireMembership(db, groupId, createdBy);
-
   const fromUser = input.fromUser ?? createdBy;
 
   if (fromUser === input.toUser) {
@@ -47,28 +45,40 @@ export async function recordPayment(
     );
   }
 
-  const members = await listGroupMembers(db, groupId);
-  const memberIds = new Set(members.map((member) => member.userId));
+  // One transaction for a single INSERT, which looks like overkill until you
+  // remember what the check above it does: it locks the two memberships, and
+  // that lock is what stops a payment from landing on somebody who is walking
+  // out the door at the same instant. Same reasoning as create-expense.ts.
+  return withTransaction(db, async (tx) => {
+    await requireMembership(tx, groupId, createdBy);
 
-  const strangers = [fromUser, input.toUser].filter((id) => !memberIds.has(id));
+    const memberIds = await lockActiveGroupMembers(tx, groupId, [
+      fromUser,
+      input.toUser,
+    ]);
 
-  if (strangers.length > 0) {
-    throw badRequest(
-      'not_a_member',
-      `these users are not in the group: ${[...new Set(strangers)].join(', ')}`,
+    const strangers = [fromUser, input.toUser].filter(
+      (id) => !memberIds.has(id),
     );
-  }
 
-  const payment = await insertPayment(db, {
-    groupId,
-    fromUser,
-    toUser: input.toUser,
-    amountCents: input.amountCents,
-    paidAt: input.paidAt === undefined ? null : new Date(input.paidAt),
-    createdBy,
+    if (strangers.length > 0) {
+      throw badRequest(
+        'not_a_member',
+        `these users are not in the group: ${[...new Set(strangers)].join(', ')}`,
+      );
+    }
+
+    const payment = await insertPayment(tx, {
+      groupId,
+      fromUser,
+      toUser: input.toUser,
+      amountCents: input.amountCents,
+      paidAt: input.paidAt === undefined ? null : new Date(input.paidAt),
+      createdBy,
+    });
+
+    return { payment };
   });
-
-  return { payment };
 }
 
 export async function listGroupPayments(

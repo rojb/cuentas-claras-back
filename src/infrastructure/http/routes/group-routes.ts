@@ -3,7 +3,9 @@ import { z } from 'zod';
 import type { Database } from '../../db/pool.js';
 import type { TokenSettings } from '../../../application/auth/tokens.js';
 import { createGroup } from '../../../application/groups/create-group.js';
-import { addGroupMember } from '../../../application/groups/add-group-member.js';
+import { inviteGroupMember } from '../../../application/groups/invite-group-member.js';
+import { listGroupPendingGuests } from '../../../application/groups/respond-to-invitation.js';
+import { leaveGroup } from '../../../application/groups/leave-group.js';
 import { requireMembership } from '../../../application/groups/membership.js';
 import {
   listGroupMembers,
@@ -29,7 +31,7 @@ const createGroupSchema = z.object({
     .regex(/^[A-Z]{3}$/, 'must be a 3-letter currency code, like ARS or USD'),
 });
 
-const addMemberSchema = z.object({
+const inviteSchema = z.object({
   email: z.email(),
 });
 
@@ -104,14 +106,49 @@ export function groupRoutes(db: Database, tokens: TokenSettings): Router {
     res.json({ members: await listGroupMembers(db, groupId) });
   });
 
-  routes.post('/:groupId/members', validateBody(addMemberSchema), async (req, res) => {
+  // There is no POST /:groupId/members any more, and that is the point.
+  // Nobody puts somebody else in a group: you ask, and they answer.
+  routes.post('/:groupId/invitations', validateBody(inviteSchema), async (req, res) => {
     const groupId = readGroupId(req.params.groupId);
-    const input = validatedBody<z.infer<typeof addMemberSchema>>(req);
+    const input = validatedBody<z.infer<typeof inviteSchema>>(req);
 
-    const result = await addGroupMember(db, groupId, currentUser(req).userId, input);
+    const result = await inviteGroupMember(
+      db,
+      groupId,
+      currentUser(req).userId,
+      input,
+    );
 
-    // 201 when the membership is new, 200 when they were already in.
-    res.status(result.added ? 201 : 200).json({ member: result.member });
+    // 201 when the question is new, 200 when it was already open.
+    res.status(result.created ? 201 : 200).json({
+      invitation: result.invitation,
+      invitee: result.invitee,
+    });
+  });
+
+  /** Who has been asked and has not answered yet. */
+  routes.get('/:groupId/invitations', async (req, res) => {
+    const groupId = readGroupId(req.params.groupId);
+
+    res.json({
+      invitations: await listGroupPendingGuests(
+        db,
+        groupId,
+        currentUser(req).userId,
+      ),
+    });
+  });
+
+  // "me" and not an :userId, because this endpoint does one thing and it is
+  // not kicking people out. A path that reads /members/:userId invites the
+  // question of who else you are allowed to name, and the answer here is
+  // nobody. 204: it worked, and there is nothing left to say about it.
+  routes.delete('/:groupId/members/me', async (req, res) => {
+    const groupId = readGroupId(req.params.groupId);
+
+    await leaveGroup(db, groupId, currentUser(req).userId);
+
+    res.status(204).end();
   });
 
   return routes;

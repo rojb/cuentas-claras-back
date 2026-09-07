@@ -1,9 +1,10 @@
 import {
   withTransaction,
   type Database,
+  type Queryable,
   type Transaction,
 } from '../../infrastructure/db/pool.js';
-import { listGroupMembers } from '../../infrastructure/db/groups-repository.js';
+import { lockActiveGroupMembers } from '../../infrastructure/db/groups-repository.js';
 import {
   insertExpense,
   insertExpenseItem,
@@ -53,13 +54,12 @@ export async function createExpense(
   createdBy: string,
   input: CreateExpenseInput,
 ): Promise<CreatedExpense> {
-  const prepared = await prepareExpense(db, groupId, createdBy, input);
+  return withTransaction(db, async (tx) => {
+    const prepared = await prepareExpense(tx, groupId, createdBy, input);
+    const expense = await writeExpense(tx, groupId, createdBy, input, prepared);
 
-  const expense = await withTransaction(db, (tx) =>
-    writeExpense(tx, groupId, createdBy, input, prepared),
-  );
-
-  return { expense, shares: prepared.shares };
+    return { expense, shares: prepared.shares };
+  });
 }
 
 export interface PreparedExpense {
@@ -72,11 +72,16 @@ export interface PreparedExpense {
  * Everything that can be rejected, decided before a single row is written.
  *
  * Separated from the writing so that editing an expense — which is a void
- * plus a fresh insert — can reuse the exact same rules without either
- * duplicating them or nesting a transaction inside another one.
+ * plus a fresh insert — can reuse the exact same rules without duplicating
+ * them.
+ *
+ * MUST run inside the caller's transaction, which is why it takes a Queryable
+ * and not a Pool. It does not merely read who the members are, it LOCKS them
+ * (see assertEveryoneIsAMember), and a lock taken on a pooled connection that
+ * is handed back a millisecond later is not a lock at all — it is a comment.
  */
 export async function prepareExpense(
-  db: Database,
+  db: Queryable,
   groupId: string,
   actor: string,
   input: CreateExpenseInput,
@@ -160,18 +165,31 @@ export async function writeExpense(
 }
 
 /**
- * Charging somebody who left the group is already impossible: the composite
- * foreign key on (group_id, user_id) would refuse the row. But it would
- * refuse it as a raw driver error at COMMIT, naming a constraint instead of
- * a person. Checking here buys a message the client can act on.
+ * The composite foreign key on (group_id, user_id) already stops us charging
+ * a complete stranger, but it does so as a raw driver error at COMMIT, naming
+ * a constraint instead of a person. Checking here buys a message the client
+ * can act on.
+ *
+ * For somebody who LEFT the group, this check is not a nicety — it is the
+ * only thing standing in the way. Their membership row is still there, on
+ * purpose, holding up the expenses they were part of, so the foreign key
+ * still says yes.
+ *
+ * Which is why this LOCKS as it reads. Somebody may only leave a group at a
+ * balance of zero (see leave-group.ts), and that rule is worth exactly as
+ * much as the guarantee that no expense lands on them between the moment
+ * their balance was read and the moment they are gone. Holding these rows
+ * makes the two operations take turns: the goodbye waits for this expense and
+ * then sees a balance that includes it, or this expense waits for the goodbye
+ * and then finds the person is no longer a member. Either order is correct.
+ * No order at all is how a debt ends up belonging to nobody.
  */
 async function assertEveryoneIsAMember(
-  db: Database,
+  db: Queryable,
   groupId: string,
   userIds: readonly string[],
 ): Promise<void> {
-  const members = await listGroupMembers(db, groupId);
-  const memberIds = new Set(members.map((member) => member.userId));
+  const memberIds = await lockActiveGroupMembers(db, groupId, userIds);
 
   const strangers = [...new Set(userIds)].filter((id) => !memberIds.has(id));
 

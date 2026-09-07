@@ -5,6 +5,7 @@ import { cors } from './cors.js';
 import { handleErrors, routeNotFound } from './errors.js';
 import { authRoutes } from './routes/auth-routes.js';
 import { groupRoutes } from './routes/group-routes.js';
+import { invitationRoutes } from './routes/invitation-routes.js';
 
 /**
  * Builds the HTTP app.
@@ -32,6 +33,10 @@ export function createApp(
 
   app.use('/auth', authRoutes(db, tokens));
   app.use('/groups', groupRoutes(db, tokens));
+
+  // Top level, not under /groups: an invitation is addressed to a person, and
+  // its whole purpose is to exist before they can read the group.
+  app.use('/invitations', invitationRoutes(db, tokens));
 
   // Order matters: unknown routes first, then the error handler last, so
   // everything thrown anywhere above lands in one place.
