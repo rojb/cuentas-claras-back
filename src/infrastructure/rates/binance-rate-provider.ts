@@ -15,11 +15,13 @@ import {
  * on top of this caches, falls back to the last good value, and ultimately
  * lets the user type the rate by hand.
  *
- * SELL side, not BUY. We are pricing money somebody already spent: Ana paid
- * Bs 696 for dinner, and what that was worth in USDT is what she would have
- * received selling USDT to raise those bolivianos — the SELL book, the lower
- * and more conservative quote. Reading the BUY book instead would value every
- * boliviano expense slightly high and quietly inflate what people owe.
+ * WHICH SIDE OF THE BOOK depends on the currency, and that is not a whim —
+ * see TRADE_SIDE below. For bolivianos it is the SELL side: we are pricing
+ * money somebody already spent, and what Ana's Bs 696 was worth in USDT is
+ * what she would have received selling USDT to raise those bolivianos.
+ *
+ * Dollars are the exception, because the USD P2P book is not a USDT/USD
+ * market at all.
  */
 
 const DEFAULT_P2P_URL =
@@ -28,7 +30,35 @@ const DEFAULT_P2P_URL =
 /** How many live ads to read before taking the one in the middle. */
 const SAMPLE_ROWS = 15;
 
-const TRADE_TYPE = 'SELL';
+type TradeSide = 'BUY' | 'SELL';
+
+/**
+ * Which side of the P2P book to read, per currency.
+ *
+ * BOLIVIANOS: SELL. You sell USDT to raise bolivianos, so the price you would
+ * receive is what those bolivianos were worth. The book is deep and the two
+ * sides sit about 0,3% apart, so the choice barely moves the number anyway.
+ *
+ * DOLLARS: BUY, and this is not the same reasoning applied differently — it
+ * is a correction. Binance P2P has no real USDT/USD market. Its USD SELL ads
+ * are remittance corridors into countries with capital controls, paid through
+ * Zelle, GPay and the like, and they carry a premium that has nothing to do
+ * with what a USDT is worth: measured on the same afternoon the SELL side
+ * quoted 1,100 while BUY quoted 0,997. Reading SELL there priced every dollar
+ * expense about 10% low — a US$ 50 dinner landing in the ledger as 45,45 USDT
+ * instead of 50,15.
+ *
+ * So this map is the honest version of "read the side that is actually a
+ * market". If a currency is ever added, TypeScript will refuse to compile
+ * until somebody decides which side it belongs on, which is the point.
+ */
+const TRADE_SIDE: Record<
+  Exclude<CurrencyCode, typeof SETTLEMENT_CURRENCY>,
+  TradeSide
+> = {
+  BOB: 'SELL',
+  USD: 'BUY',
+};
 
 export type BinanceRateProvider = (
   currencyCode: CurrencyCode,
@@ -61,7 +91,7 @@ export function createBinanceRateProvider(
       body: JSON.stringify({
         fiat: currencyCode,
         asset: SETTLEMENT_CURRENCY,
-        tradeType: TRADE_TYPE,
+        tradeType: TRADE_SIDE[currencyCode],
         page: 1,
         rows: SAMPLE_ROWS,
         payTypes: [],
