@@ -11,6 +11,7 @@ import { replaceExpense } from '../../../application/expenses/replace-expense.js
 import { validateBody, validatedBody } from '../validate.js';
 import { currentUser } from '../authenticate.js';
 import { pathParams, readUuid } from '../params.js';
+import type { GroupEvents } from '../../events/group-events.js';
 import { currencyCode, rateMicros } from './money-schema.js';
 
 const userId = z.uuid();
@@ -108,16 +109,23 @@ const createExpenseSchema = z.object({
 });
 
 /** Mounted under /groups/:groupId, so it needs the parent's params. */
-export function expenseRoutes(db: Database): Router {
+export function expenseRoutes(db: Database, events: GroupEvents): Router {
   const routes = Router({ mergeParams: true });
 
   routes.post('/', validateBody(createExpenseSchema), async (req, res) => {
     const groupId = readUuid(pathParams(req).groupId, 'group');
     const input = validatedBody<z.infer<typeof createExpenseSchema>>(req);
 
-    res
-      .status(201)
-      .json(await createExpense(db, groupId, currentUser(req).userId, input));
+    const actorId = currentUser(req).userId;
+    const created = await createExpense(db, groupId, actorId, input);
+
+    // Announced only once the write has come back, which means the
+    // transaction committed. Telling four phones to reload because of an
+    // expense that then rolled back would have them all fetch the same
+    // nothing.
+    events.publish({ kind: 'expense.created', groupId, actorId });
+
+    res.status(201).json(created);
   });
 
   routes.get('/', async (req, res) => {
@@ -143,22 +151,23 @@ export function expenseRoutes(db: Database): Router {
     const expenseId = readUuid(pathParams(req).expenseId, 'expense');
     const input = validatedBody<z.infer<typeof createExpenseSchema>>(req);
 
-    res.json(
-      await replaceExpense(
-        db,
-        groupId,
-        expenseId,
-        currentUser(req).userId,
-        input,
-      ),
-    );
+    const actorId = currentUser(req).userId;
+    const replaced = await replaceExpense(db, groupId, expenseId, actorId, input);
+
+    events.publish({ kind: 'expense.replaced', groupId, actorId });
+
+    res.json(replaced);
   });
 
   routes.delete('/:expenseId', async (req, res) => {
     const groupId = readUuid(pathParams(req).groupId, 'group');
     const expenseId = readUuid(pathParams(req).expenseId, 'expense');
 
-    await deleteExpense(db, groupId, expenseId, currentUser(req).userId);
+    const actorId = currentUser(req).userId;
+    await deleteExpense(db, groupId, expenseId, actorId);
+
+    events.publish({ kind: 'expense.deleted', groupId, actorId });
+
     res.status(204).end();
   });
 

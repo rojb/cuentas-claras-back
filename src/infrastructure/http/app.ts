@@ -5,6 +5,10 @@ import {
   createRateService,
   type RateService,
 } from '../../application/rates/current-rate.js';
+import {
+  createGroupEvents,
+  type GroupEvents,
+} from '../events/group-events.js';
 import { cors } from './cors.js';
 import { handleErrors, routeNotFound } from './errors.js';
 import { authRoutes } from './routes/auth-routes.js';
@@ -24,6 +28,7 @@ export function createApp(
   tokens: TokenSettings,
   webOrigins: readonly string[] = [],
   rates: RateService = createRateService(),
+  events: GroupEvents = createGroupEvents(),
 ): Express {
   const app = express();
 
@@ -38,7 +43,7 @@ export function createApp(
   });
 
   app.use('/auth', authRoutes(db, tokens));
-  app.use('/groups', groupRoutes(db, tokens));
+  app.use('/groups', groupRoutes(db, tokens, events));
 
   // Top level, not under /groups: the rate for a currency is the same for
   // everyone, and the forms ask for it before an expense exists.
@@ -46,7 +51,7 @@ export function createApp(
 
   // Top level, not under /groups: an invitation is addressed to a person, and
   // its whole purpose is to exist before they can read the group.
-  app.use('/invitations', invitationRoutes(db, tokens));
+  app.use('/invitations', invitationRoutes(db, tokens, events));
 
   // Order matters: unknown routes first, then the error handler last, so
   // everything thrown anywhere above lands in one place.

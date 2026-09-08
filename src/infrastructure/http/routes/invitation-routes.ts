@@ -8,6 +8,7 @@ import {
 } from '../../../application/groups/respond-to-invitation.js';
 import { authenticate, currentUser } from '../authenticate.js';
 import { readUuid } from '../params.js';
+import type { GroupEvents } from '../../events/group-events.js';
 
 /**
  * The invitations addressed to whoever is asking.
@@ -16,7 +17,11 @@ import { readUuid } from '../params.js';
  * a group you are not in yet, so an invitation to it cannot live behind a
  * URL that already requires membership. These are yours, not the group's.
  */
-export function invitationRoutes(db: Database, tokens: TokenSettings): Router {
+export function invitationRoutes(
+  db: Database,
+  tokens: TokenSettings,
+  events: GroupEvents,
+): Router {
   const routes = Router();
 
   routes.use(authenticate(tokens));
@@ -36,11 +41,13 @@ export function invitationRoutes(db: Database, tokens: TokenSettings): Router {
   routes.post('/:invitationId/accept', async (req, res) => {
     const invitationId = readInvitationId(req.params.invitationId);
 
-    const { group } = await acceptInvitation(
-      db,
-      invitationId,
-      currentUser(req).userId,
-    );
+    const actorId = currentUser(req).userId;
+    const { group } = await acceptInvitation(db, invitationId, actorId);
+
+    // Announced to the group, not to the person who just joined — they are
+    // about to open it anyway. It is everybody ALREADY inside who needs the
+    // new name to appear in their member list and their split editor.
+    events.publish({ kind: 'member.joined', groupId: group.id, actorId });
 
     // The group comes back so the app can take somebody straight into it
     // instead of making them go and look for what they just joined.

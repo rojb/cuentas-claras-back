@@ -14,6 +14,8 @@ import {
 import { validateBody, validatedBody } from '../validate.js';
 import { authenticate, currentUser } from '../authenticate.js';
 import { readUuid } from '../params.js';
+import type { GroupEvents } from '../../events/group-events.js';
+import { eventRoutes } from './event-routes.js';
 import { expenseRoutes } from './expense-routes.js';
 import { paymentRoutes } from './payment-routes.js';
 import {
@@ -32,16 +34,27 @@ const inviteSchema = z.object({
 
 const readGroupId = (value: unknown): string => readUuid(value, 'group');
 
-export function groupRoutes(db: Database, tokens: TokenSettings): Router {
+export function groupRoutes(
+  db: Database,
+  tokens: TokenSettings,
+  events: GroupEvents,
+): Router {
   const routes = Router();
+
+  // BEFORE the authenticate() below, and that ordering is the whole reason
+  // this line is here and not with the others. The event stream needs the
+  // variant that also reads a token from the query string, because
+  // EventSource cannot send a header; registering it first lets it bring its
+  // own gate instead of being turned away by the strict one.
+  routes.use('/:groupId/events', eventRoutes(db, tokens, events));
 
   // Everything below belongs to somebody. No anonymous access, ever.
   routes.use(authenticate(tokens));
 
   // Expenses live inside a group and nowhere else, so their URLs say so.
   // authenticate() above already covers them.
-  routes.use('/:groupId/expenses', expenseRoutes(db));
-  routes.use('/:groupId/payments', paymentRoutes(db));
+  routes.use('/:groupId/expenses', expenseRoutes(db, events));
+  routes.use('/:groupId/payments', paymentRoutes(db, events));
 
   // Derived, never stored. Every request recomputes them from the ledger,
   // which is exactly why they can never drift out of date.
@@ -141,7 +154,11 @@ export function groupRoutes(db: Database, tokens: TokenSettings): Router {
   routes.delete('/:groupId/members/me', async (req, res) => {
     const groupId = readGroupId(req.params.groupId);
 
-    await leaveGroup(db, groupId, currentUser(req).userId);
+    const actorId = currentUser(req).userId;
+    await leaveGroup(db, groupId, actorId);
+
+    // The people still in the group have one fewer name in every picker.
+    events.publish({ kind: 'member.left', groupId, actorId });
 
     res.status(204).end();
   });
