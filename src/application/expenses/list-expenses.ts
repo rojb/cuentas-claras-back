@@ -10,9 +10,23 @@ import {
 import { notFound } from '../../infrastructure/http/errors.js';
 import { requireMembership } from '../groups/membership.js';
 
+/**
+ * An expense and what each person owes for it, in BOTH units.
+ *
+ * shareCents is what the people agreed to, in the currency the money was
+ * spent in: it is the number that has to look right next to the receipt.
+ * shareUsdtCents is what the ledger actually charges them, and it is the one
+ * the balances are built from. Sending only the first would leave the client
+ * unable to explain its own totals; sending only the second would show
+ * somebody "4,79" for a lunch they remember paying Bs 33,34 for.
+ */
 export interface ExpenseWithShares {
   readonly expense: ExpenseRow;
-  readonly shares: readonly { userId: string; shareCents: number }[];
+  readonly shares: readonly {
+    userId: string;
+    shareCents: number;
+    shareUsdtCents: number;
+  }[];
 }
 
 /**
@@ -34,11 +48,18 @@ export async function listGroupExpenses(
     listShares(db, groupId),
   ]);
 
-  const sharesByExpense = new Map<string, { userId: string; shareCents: number }[]>();
+  const sharesByExpense = new Map<
+    string,
+    { userId: string; shareCents: number; shareUsdtCents: number }[]
+  >();
 
   for (const share of shares) {
     const forExpense = sharesByExpense.get(share.expenseId) ?? [];
-    forExpense.push({ userId: share.userId, shareCents: share.shareCents });
+    forExpense.push({
+      userId: share.userId,
+      shareCents: share.shareCents,
+      shareUsdtCents: share.shareUsdtCents,
+    });
     sharesByExpense.set(share.expenseId, forExpense);
   }
 
@@ -69,6 +90,7 @@ export async function getExpense(
     shares: shares.map((share) => ({
       userId: share.userId,
       shareCents: share.shareCents,
+      shareUsdtCents: share.shareUsdtCents,
     })),
   };
 }

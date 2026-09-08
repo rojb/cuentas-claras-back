@@ -4,7 +4,14 @@ export interface ExpenseRow {
   readonly id: string;
   readonly groupId: string;
   readonly description: string;
+  /** In currencyCode: what the receipt actually said. */
   readonly totalCents: number;
+  /** What it was paid in. The group has no currency of its own any more. */
+  readonly currencyCode: string;
+  /** Millionths of currencyCode per USDT, frozen the night this happened. */
+  readonly rateMicros: number;
+  /** The same money in the unit the ledger settles in. */
+  readonly totalUsdtCents: number;
   readonly paidBy: string;
   readonly splitStrategy: string;
   readonly spentAt: Date;
@@ -17,7 +24,10 @@ export interface ExpenseRow {
 export interface ShareRow {
   readonly expenseId: string;
   readonly userId: string;
+  /** What this person agreed to, in the expense's own currency. */
   readonly shareCents: number;
+  /** What the ledger charges them. This is the one balances are built from. */
+  readonly shareUsdtCents: number;
 }
 
 export interface ItemRow {
@@ -30,15 +40,18 @@ export interface ItemRow {
 }
 
 const EXPENSE_COLUMNS = `id,
-       group_id       AS "groupId",
+       group_id         AS "groupId",
        description,
-       total_cents    AS "totalCents",
-       paid_by        AS "paidBy",
-       split_strategy AS "splitStrategy",
-       split_params   AS "splitParams",
-       spent_at       AS "spentAt",
-       created_by     AS "createdBy",
-       created_at     AS "createdAt"`;
+       total_cents      AS "totalCents",
+       currency_code    AS "currencyCode",
+       rate_micros      AS "rateMicros",
+       total_usdt_cents AS "totalUsdtCents",
+       paid_by          AS "paidBy",
+       split_strategy   AS "splitStrategy",
+       split_params     AS "splitParams",
+       spent_at         AS "spentAt",
+       created_by       AS "createdBy",
+       created_at       AS "createdAt"`;
 
 export async function insertExpense(
   db: Queryable,
@@ -46,6 +59,9 @@ export async function insertExpense(
     groupId: string;
     description: string;
     totalCents: number;
+    currencyCode: string;
+    rateMicros: number;
+    totalUsdtCents: number;
     paidBy: string;
     splitStrategy: string;
     splitParams: unknown;
@@ -54,14 +70,18 @@ export async function insertExpense(
   },
 ): Promise<ExpenseRow> {
   const { rows } = await db.query<ExpenseRow>(
-    `INSERT INTO expenses (group_id, description, total_cents, paid_by,
+    `INSERT INTO expenses (group_id, description, total_cents, currency_code,
+                           rate_micros, total_usdt_cents, paid_by,
                            split_strategy, split_params, spent_at, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, coalesce($7, now()), $8)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, coalesce($10, now()), $11)
      RETURNING ${EXPENSE_COLUMNS}`,
     [
       expense.groupId,
       expense.description,
       expense.totalCents,
+      expense.currencyCode,
+      expense.rateMicros,
+      expense.totalUsdtCents,
       expense.paidBy,
       expense.splitStrategy,
       JSON.stringify(expense.splitParams),
@@ -90,17 +110,24 @@ export async function insertExpenseShares(
   db: Queryable,
   expenseId: string,
   groupId: string,
-  shares: readonly { userId: string; shareCents: number }[],
+  shares: readonly {
+    userId: string;
+    shareCents: number;
+    shareUsdtCents: number;
+  }[],
 ): Promise<void> {
   await db.query(
-    `INSERT INTO expense_shares (expense_id, group_id, user_id, share_cents)
-     SELECT $1, $2, user_id, share_cents
-       FROM unnest($3::uuid[], $4::bigint[]) AS s(user_id, share_cents)`,
+    `INSERT INTO expense_shares (expense_id, group_id, user_id, share_cents,
+                                 share_usdt_cents)
+     SELECT $1, $2, user_id, share_cents, share_usdt_cents
+       FROM unnest($3::uuid[], $4::bigint[], $5::bigint[])
+            AS s(user_id, share_cents, share_usdt_cents)`,
     [
       expenseId,
       groupId,
       shares.map((share) => share.userId),
       shares.map((share) => share.shareCents),
+      shares.map((share) => share.shareUsdtCents),
     ],
   );
 }
@@ -192,9 +219,10 @@ export async function listShares(
   groupId: string,
 ): Promise<ShareRow[]> {
   const { rows } = await db.query<ShareRow>(
-    `SELECT s.expense_id  AS "expenseId",
-            s.user_id     AS "userId",
-            s.share_cents AS "shareCents"
+    `SELECT s.expense_id       AS "expenseId",
+            s.user_id          AS "userId",
+            s.share_cents      AS "shareCents",
+            s.share_usdt_cents AS "shareUsdtCents"
        FROM expense_shares s
        JOIN expenses e ON e.id = s.expense_id
       WHERE s.group_id = $1 AND e.deleted_at IS NULL`,
@@ -209,7 +237,10 @@ export async function listSharesOf(
   expenseId: string,
 ): Promise<ShareRow[]> {
   const { rows } = await db.query<ShareRow>(
-    `SELECT expense_id AS "expenseId", user_id AS "userId", share_cents AS "shareCents"
+    `SELECT expense_id       AS "expenseId",
+            user_id          AS "userId",
+            share_cents      AS "shareCents",
+            share_usdt_cents AS "shareUsdtCents"
        FROM expense_shares
       WHERE expense_id = $1`,
     [expenseId],

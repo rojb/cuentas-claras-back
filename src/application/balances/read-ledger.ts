@@ -43,18 +43,29 @@ export async function calculateGroupBalances(
     listPayments(db, groupId),
   ]);
 
+  // EVERYTHING BELOW IS IN USDT, and nothing else gets in.
+  //
+  // The group holds expenses in bolivianos, dollars and USDT, but a balance
+  // made of three currencies is not a balance — you cannot subtract Bs 40
+  // from 12 USD and get a number that means anything. Each expense was
+  // converted once, when it was written, at the rate agreed that day; this is
+  // where those already-converted amounts are read and nothing is converted
+  // again. The domain never learns that more than one currency exists.
   const sharesByExpense = new Map<string, { participantId: string; amountCents: number }[]>();
 
   for (const share of shares) {
     const forExpense = sharesByExpense.get(share.expenseId) ?? [];
-    forExpense.push({ participantId: share.userId, amountCents: share.shareCents });
+    forExpense.push({
+      participantId: share.userId,
+      amountCents: share.shareUsdtCents,
+    });
     sharesByExpense.set(share.expenseId, forExpense);
   }
 
   const expenseRecords: ExpenseRecord[] = expenses.map((expense) => ({
     id: expense.id,
     paidBy: expense.paidBy,
-    totalCents: expense.totalCents,
+    totalCents: expense.totalUsdtCents,
     shares: sharesByExpense.get(expense.id) ?? [],
   }));
 
@@ -62,7 +73,7 @@ export async function calculateGroupBalances(
     id: payment.id,
     fromParticipant: payment.fromUser,
     toParticipant: payment.toUser,
-    amountCents: payment.amountCents,
+    amountCents: payment.amountUsdtCents,
   }));
 
   const balances = calculateBalances(expenseRecords, paymentRecords);

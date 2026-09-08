@@ -14,7 +14,6 @@ export interface InvitationRecord {
 /** An invitation as the person who received it sees it: with context. */
 export interface IncomingInvitationRecord extends InvitationRecord {
   readonly groupName: string;
-  readonly currencyCode: string;
   readonly invitedByName: string;
   readonly memberCount: number;
 }
@@ -132,9 +131,8 @@ export async function listIncomingInvitations(
             i.status,
             i.created_at   AS "createdAt",
             i.responded_at AS "respondedAt",
-            g.name          AS "groupName",
-            g.currency_code AS "currencyCode",
-            u.display_name  AS "invitedByName",
+            g.name         AS "groupName",
+            u.display_name AS "invitedByName",
             (SELECT count(*)
                FROM group_members m
               WHERE m.group_id = g.id AND m.left_at IS NULL) AS "memberCount"

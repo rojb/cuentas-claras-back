@@ -5,9 +5,16 @@ import {
   type GroupRecord,
 } from '../../infrastructure/db/groups-repository.js';
 
+/**
+ * A group has no currency.
+ *
+ * It used to, and it was a lie: people on one trip pay for dinner in
+ * bolivianos, a hotel in dollars and each other in USDT. The currency moved
+ * down to the individual expense, where it belongs, and the group settles
+ * everything in USDT.
+ */
 export interface CreateGroupInput {
   readonly name: string;
-  readonly currencyCode: string;
 }
 
 /**
@@ -25,7 +32,6 @@ export async function createGroup(
   const group = await withTransaction(db, async (tx) => {
     const created = await insertGroup(tx, {
       name: input.name,
-      currencyCode: input.currencyCode,
       createdBy,
     });
 

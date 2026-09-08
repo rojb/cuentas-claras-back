@@ -9,11 +9,17 @@ import {
 import { validateBody, validatedBody } from '../validate.js';
 import { currentUser } from '../authenticate.js';
 import { pathParams, readUuid } from '../params.js';
+import { currencyCode, rateMicros } from './money-schema.js';
 
 const recordPaymentSchema = z.object({
   fromUser: z.uuid().optional(),
   toUser: z.uuid(),
+  // A debt is in USDT; settling it is not obliged to be. Handing somebody
+  // Bs 348 to cover 50 USDT is a normal thing to do, and the rate is what
+  // says the two are the same payment.
   amountCents: z.int().positive(),
+  currencyCode,
+  rateMicros,
   paidAt: z.iso.datetime().optional(),
 });
 

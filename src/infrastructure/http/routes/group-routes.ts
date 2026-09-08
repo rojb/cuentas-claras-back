@@ -21,14 +21,9 @@ import {
   calculateGroupSettlement,
 } from '../../../application/balances/read-ledger.js';
 
+// No currency: a group settles in USDT and its expenses carry their own.
 const createGroupSchema = z.object({
   name: z.string().trim().min(1).max(80),
-  // ISO 4217, upper-cased for us so "ars" and "ARS" are the same group.
-  currencyCode: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^[A-Z]{3}$/, 'must be a 3-letter currency code, like ARS or USD'),
 });
 
 const inviteSchema = z.object({

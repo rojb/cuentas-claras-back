@@ -3,7 +3,6 @@ import type { Queryable } from './pool.js';
 export interface GroupRecord {
   readonly id: string;
   readonly name: string;
-  readonly currencyCode: string;
   readonly createdBy: string;
   readonly createdAt: Date;
 }
@@ -29,19 +28,18 @@ export function isForeignKeyViolation(error: unknown): boolean {
 
 const GROUP_COLUMNS = `id,
        name,
-       currency_code AS "currencyCode",
-       created_by    AS "createdBy",
-       created_at    AS "createdAt"`;
+       created_by AS "createdBy",
+       created_at AS "createdAt"`;
 
 export async function insertGroup(
   db: Queryable,
-  group: { name: string; currencyCode: string; createdBy: string },
+  group: { name: string; createdBy: string },
 ): Promise<GroupRecord> {
   const { rows } = await db.query<GroupRecord>(
-    `INSERT INTO expense_groups (name, currency_code, created_by)
-     VALUES ($1, $2, $3)
+    `INSERT INTO expense_groups (name, created_by)
+     VALUES ($1, $2)
      RETURNING ${GROUP_COLUMNS}`,
-    [group.name, group.currencyCode, group.createdBy],
+    [group.name, group.createdBy],
   );
 
   const inserted = rows[0];
@@ -213,9 +211,8 @@ export async function listGroupsForUser(
   const { rows } = await db.query<GroupRecord & { memberCount: number }>(
     `SELECT g.id,
             g.name,
-            g.currency_code AS "currencyCode",
-            g.created_by    AS "createdBy",
-            g.created_at    AS "createdAt",
+            g.created_by AS "createdBy",
+            g.created_at AS "createdAt",
             (SELECT count(*)
                FROM group_members m
               WHERE m.group_id = g.id AND m.left_at IS NULL) AS "memberCount"

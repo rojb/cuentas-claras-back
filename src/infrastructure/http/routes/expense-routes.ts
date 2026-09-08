@@ -11,6 +11,7 @@ import { replaceExpense } from '../../../application/expenses/replace-expense.js
 import { validateBody, validatedBody } from '../validate.js';
 import { currentUser } from '../authenticate.js';
 import { pathParams, readUuid } from '../params.js';
+import { currencyCode, rateMicros } from './money-schema.js';
 
 const userId = z.uuid();
 const cents = z.int().nonnegative();
@@ -95,7 +96,12 @@ const split = z.discriminatedUnion('kind', [
 
 const createExpenseSchema = z.object({
   description: z.string().trim().min(1).max(120),
+  // In currencyCode. Every amount inside `split` is in it too: the split is
+  // what the people agreed to, and they agreed to it in the money they were
+  // holding. Converting to USDT happens once, afterwards, on the total.
   totalCents: z.int().positive(),
+  currencyCode,
+  rateMicros,
   paidBy: userId.optional(),
   spentAt: z.iso.datetime().optional(),
   split,

@@ -13,6 +13,12 @@ import {
   type ExpenseRow,
 } from '../../infrastructure/db/expenses-repository.js';
 import { badRequest, unprocessable } from '../../infrastructure/http/errors.js';
+import { distributeProportionally } from '../../domain/distribute-proportionally.js';
+import {
+  assertRate,
+  toSettlementCents,
+  type CurrencyCode,
+} from '../../domain/currency.js';
 import { requireMembership } from '../groups/membership.js';
 import {
   participantsIn,
@@ -22,7 +28,12 @@ import {
 
 export interface CreateExpenseInput {
   readonly description: string;
+  /** In currencyCode. What the receipt said. */
   readonly totalCents: number;
+  /** What it was paid in. A group holds expenses in several. */
+  readonly currencyCode: CurrencyCode;
+  /** Millionths of currencyCode per USDT, as agreed the day it was spent. */
+  readonly rateMicros: number;
   /** Whoever put the money down. Defaults to the person creating it. */
   readonly paidBy?: string;
   readonly spentAt?: string;
@@ -31,7 +42,11 @@ export interface CreateExpenseInput {
 
 export interface CreatedExpense {
   readonly expense: ExpenseRow;
-  readonly shares: readonly { userId: string; shareCents: number }[];
+  readonly shares: readonly {
+    userId: string;
+    shareCents: number;
+    shareUsdtCents: number;
+  }[];
 }
 
 /**
@@ -64,7 +79,15 @@ export async function createExpense(
 
 export interface PreparedExpense {
   readonly paidBy: string;
-  readonly shares: readonly { userId: string; shareCents: number }[];
+  /** The total, converted once, in the unit the ledger settles in. */
+  readonly totalUsdtCents: number;
+  readonly shares: readonly {
+    userId: string;
+    /** What they agreed to, in the expense's currency. */
+    shareCents: number;
+    /** What the ledger charges them. Adds up to totalUsdtCents exactly. */
+    shareUsdtCents: number;
+  }[];
   readonly items: ReturnType<typeof resolveSplit>['items'];
 }
 
@@ -95,8 +118,37 @@ export async function prepareExpense(
     ...participantsIn(input.split),
   ]);
 
+  // The rate is checked before anything is divided, so that a typo in it
+  // fails as a rate problem and not as a mysterious split that will not add
+  // up three steps later.
+  try {
+    assertRate(input.currencyCode, input.rateMicros);
+  } catch (error) {
+    throw unprocessable(
+      'invalid_rate',
+      error instanceof Error ? error.message : 'that exchange rate is not usable',
+    );
+  }
+
+  const totalUsdtCents = toSettlementCents(input.totalCents, input.rateMicros);
+
+  // Small change can be worth less than a cent of USDT. There is no honest
+  // way to put that in a ledger denominated in USDT cents: rounding it up
+  // invents money, and rounding it down charges people for nothing.
+  if (totalUsdtCents <= 0) {
+    throw unprocessable(
+      'amount_too_small',
+      `${input.totalCents} ${input.currencyCode} cents is worth less than a ` +
+        `cent of USDT at that rate`,
+    );
+  }
+
   // The domain decides who owes what. It throws plain Errors because it has
   // never heard of HTTP; giving those a status code is this layer's job.
+  //
+  // NOTE THE ORDER: the split is resolved in the currency the money was
+  // actually spent in. "Ana pone Bs 40" is what the people agreed to, and it
+  // is what has to add up to the Bs 100 on the receipt.
   let resolved;
   try {
     resolved = resolveSplit(input.description, input.totalCents, input.split);
@@ -107,11 +159,26 @@ export async function prepareExpense(
     );
   }
 
+  // And only now, once, on the total.
+  //
+  // The shares in the original currency become WEIGHTS, and the converted
+  // total is divided by the same largest-remainder engine every other split
+  // already uses. Converting each share on its own instead would round each
+  // one on its own, and a handful of separate roundings do not add back up
+  // to the converted total — which is exactly the invariant the database
+  // refuses to commit without.
+  const usdtShares = distributeProportionally(
+    totalUsdtCents,
+    resolved.shares.map((share) => share.amountCents),
+  );
+
   return {
     paidBy,
-    shares: resolved.shares.map((share) => ({
+    totalUsdtCents,
+    shares: resolved.shares.map((share, index) => ({
       userId: share.participantId,
       shareCents: share.amountCents,
+      shareUsdtCents: usdtShares[index] ?? 0,
     })),
     items: resolved.items,
   };
@@ -125,13 +192,16 @@ export async function writeExpense(
   input: CreateExpenseInput,
   prepared: PreparedExpense,
 ): Promise<ExpenseRow> {
-  const { paidBy, shares, items } = prepared;
+  const { paidBy, totalUsdtCents, shares, items } = prepared;
 
   {
     const created = await insertExpense(tx, {
       groupId,
       description: input.description,
       totalCents: input.totalCents,
+      currencyCode: input.currencyCode,
+      rateMicros: input.rateMicros,
+      totalUsdtCents,
       paidBy,
       splitStrategy: STRATEGY_IN_DATABASE[input.split.kind] ?? input.split.kind,
       // Kept verbatim for audit and editing: what the user asked for, not
