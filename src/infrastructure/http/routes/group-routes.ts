@@ -120,12 +120,23 @@ export function groupRoutes(
     const groupId = readGroupId(req.params.groupId);
     const input = validatedBody<z.infer<typeof inviteSchema>>(req);
 
-    const result = await inviteGroupMember(
-      db,
+    const actorId = currentUser(req).userId;
+    const result = await inviteGroupMember(db, groupId, actorId, input);
+
+    // Told to the invited person, not to the group — they cannot open the
+    // group's stream until they accept, which is the whole reason a personal
+    // channel exists.
+    //
+    // Published even when the invitation was already open and this is a
+    // retry. "Nothing changed" would be the tidier signal, but the client's
+    // reaction is just "reload your invitations", which is idempotent and
+    // cheap — and re-announcing is what rescues somebody whose first event
+    // was lost while their phone was asleep.
+    events.publishToPerson(result.invitee.userId, {
+      kind: 'invitation.received',
       groupId,
-      currentUser(req).userId,
-      input,
-    );
+      actorId,
+    });
 
     // 201 when the question is new, 200 when it was already open.
     res.status(result.created ? 201 : 200).json({

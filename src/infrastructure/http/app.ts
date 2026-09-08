@@ -14,6 +14,7 @@ import { handleErrors, routeNotFound } from './errors.js';
 import { authRoutes } from './routes/auth-routes.js';
 import { groupRoutes } from './routes/group-routes.js';
 import { invitationRoutes } from './routes/invitation-routes.js';
+import { personalEventRoutes } from './routes/event-routes.js';
 import { rateRoutes } from './routes/rate-routes.js';
 
 /**
@@ -52,6 +53,12 @@ export function createApp(
   // Top level, not under /groups: an invitation is addressed to a person, and
   // its whole purpose is to exist before they can read the group.
   app.use('/invitations', invitationRoutes(db, tokens, events));
+
+  // The stream of things addressed to whoever is asking. Separate from a
+  // group's stream for the same reason /invitations is separate from
+  // /groups: an invitation reaches you before you are allowed to read the
+  // group it is for.
+  app.use('/events', personalEventRoutes(tokens, events));
 
   // Order matters: unknown routes first, then the error handler last, so
   // everything thrown anywhere above lands in one place.

@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import type { Database } from '../../db/pool.js';
 import type { TokenSettings } from '../../../application/auth/tokens.js';
 import { requireMembership } from '../../../application/groups/membership.js';
@@ -7,7 +7,59 @@ import { authenticate, currentUser } from '../authenticate.js';
 import { pathParams, readUuid } from '../params.js';
 
 /**
- * GET /groups/:groupId/events — a server-sent event stream for one group.
+ * Turns a response into a server-sent event stream and keeps it open.
+ *
+ * The two streams below differ only in WHO is allowed to open them and WHAT
+ * they are subscribed to; everything about holding a connection open — the
+ * headers, the heartbeat, the two cleanups — is the same, and duplicating it
+ * would mean two places to forget the unsubscribe.
+ *
+ * @param subscribe Hooks the listener up and returns the unsubscribe.
+ */
+function openStream(
+  res: Response,
+  subscribe: (send: (data: unknown) => void) => () => void,
+): void {
+  res.status(200);
+  res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+  res.setHeader('cache-control', 'no-cache, no-transform');
+  res.setHeader('connection', 'keep-alive');
+  // Nginx buffers proxied responses by default, which for a stream means
+  // the events arrive in a clump whenever the buffer fills. This asks it
+  // not to. Harmless anywhere else.
+  res.setHeader('x-accel-buffering', 'no');
+  res.flushHeaders();
+
+  // How long the browser waits before reconnecting on its own.
+  res.write('retry: 3000\n\n');
+  // An immediate comment so the client knows the stream is live rather than
+  // merely accepted; a stream that is quiet because nothing has happened
+  // looks exactly like one that never connected.
+  res.write(': open\n\n');
+
+  const unsubscribe = subscribe((data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  });
+
+  // Anything in the path — a proxy, a phone falling asleep, a laptop lid —
+  // will close a connection that says nothing for long enough. A comment
+  // every 25 seconds is cheap and keeps it open; EventSource ignores it.
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
+
+  const close = (): void => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  };
+
+  // Both, not just one: 'close' covers the client going away, and the
+  // response emitting 'close' covers the server end being torn down. A
+  // missed cleanup here is a listener that lives forever.
+  res.req.on('close', close);
+  res.on('close', close);
+}
+
+/**
+ * GET /groups/:groupId/events — the stream for one group.
  *
  * The app used to find out that somebody loaded an expense by being pulled
  * down. This is the same information arriving on its own.
@@ -53,44 +105,36 @@ export function eventRoutes(
     // leaving requires a settled balance and they will have nothing to see.
     await requireMembership(db, groupId, userId);
 
-    res.status(200);
-    res.setHeader('content-type', 'text/event-stream; charset=utf-8');
-    res.setHeader('cache-control', 'no-cache, no-transform');
-    res.setHeader('connection', 'keep-alive');
-    // Nginx buffers proxied responses by default, which for a stream means
-    // the events arrive in a clump whenever the buffer fills. This asks it
-    // not to. Harmless anywhere else.
-    res.setHeader('x-accel-buffering', 'no');
-    res.flushHeaders();
+    openStream(res, (send) => events.subscribe(groupId, send));
+  });
 
-    // How long the browser waits before reconnecting on its own.
-    res.write('retry: 3000\n\n');
-    // An immediate comment so the client knows the stream is live rather
-    // than merely accepted; a stream that is quiet because nothing has
-    // happened looks exactly like one that never connected.
-    res.write(': open\n\n');
+  return routes;
+}
 
-    const send = (data: unknown): void => {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
+/**
+ * GET /events — the stream for whoever is asking, wherever it comes from.
+ *
+ * This exists because of one case the group stream structurally cannot cover:
+ * BEING INVITED. An invitation is addressed to somebody who is not in the
+ * group yet, so it cannot travel over that group's channel — they would be
+ * refused when they tried to open it. The invitation arrives before the
+ * membership does, and a channel about the person is the only place it fits.
+ *
+ * No membership check, because there is nothing to be a member of: the token
+ * says who you are, and you are subscribed to yourself and to nobody else.
+ */
+export function personalEventRoutes(
+  tokens: TokenSettings,
+  events: GroupEvents,
+): Router {
+  const routes = Router();
 
-    const unsubscribe = events.subscribe(groupId, send);
+  routes.use(authenticate(tokens, { allowQueryToken: true }));
 
-    // Anything in the path — a proxy, a phone falling asleep, a laptop lid —
-    // will close a connection that says nothing for long enough. A comment
-    // every 25 seconds is cheap and keeps it open; EventSource ignores it.
-    const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
+  routes.get('/', (req, res) => {
+    const { userId } = currentUser(req);
 
-    const close = (): void => {
-      clearInterval(heartbeat);
-      unsubscribe();
-    };
-
-    // Both, not just one: 'close' covers the client going away, and the
-    // response emitting 'close' covers the server end being torn down. A
-    // missed cleanup here is a listener that lives forever.
-    req.on('close', close);
-    res.on('close', close);
+    openStream(res, (send) => events.subscribeToPerson(userId, send));
   });
 
   return routes;
