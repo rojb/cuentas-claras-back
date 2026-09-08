@@ -3,7 +3,7 @@ import { lockActiveGroupMembers } from '../../infrastructure/db/groups-repositor
 import {
   findPayment,
   insertPayment,
-  listPayments,
+  listPaymentHistory,
   voidPayment,
   type PaymentRow,
 } from '../../infrastructure/db/payments-repository.js';
@@ -149,6 +149,15 @@ export async function recordPayment(
   });
 }
 
+/**
+ * The group's payment history, VOIDED ONES INCLUDED.
+ *
+ * Not the same list the balances are built from. A voided payment stops
+ * counting and stays visible: the history is a record of what people did, and
+ * one you can quietly take things out of is not a record. The rows come back
+ * carrying voidedAt so the screen can strike them through instead of drawing
+ * them as if they still moved money.
+ */
 export async function listGroupPayments(
   db: Database,
   groupId: string,
@@ -156,7 +165,7 @@ export async function listGroupPayments(
 ): Promise<PaymentRow[]> {
   await requireMembership(db, groupId, userId);
 
-  return listPayments(db, groupId);
+  return listPaymentHistory(db, groupId);
 }
 
 /**
@@ -199,7 +208,7 @@ export async function deletePayment(
     );
   }
 
-  if (!(await voidPayment(db, groupId, paymentId))) {
+  if (!(await voidPayment(db, groupId, paymentId, userId))) {
     throw notFound('payment_not_found', 'that payment does not exist');
   }
 }

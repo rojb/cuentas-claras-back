@@ -16,6 +16,24 @@ export interface PaymentRow {
   readonly paidAt: Date;
   readonly createdBy: string;
   readonly createdAt: Date;
+
+  /**
+   * When it was undone, or null while it still counts.
+   *
+   * A voided payment is not gone: it stays out of the balances and stays IN
+   * the history, struck through. Money moving and then un-moving is a thing
+   * that happened, and a record it can vanish from is not a record.
+   */
+  readonly voidedAt: Date | null;
+
+  /**
+   * Who undid it. Not the same as who recorded it — the group's creator can
+   * strike through somebody else's, which is exactly the case worth seeing.
+   *
+   * Null for payments voided before this was recorded at all; the screen says
+   * "anulado" without a name rather than guessing one.
+   */
+  readonly voidedBy: string | null;
 }
 
 const PAYMENT_COLUMNS = `id,
@@ -28,7 +46,9 @@ const PAYMENT_COLUMNS = `id,
        amount_usdt_cents AS "amountUsdtCents",
        paid_at           AS "paidAt",
        created_by        AS "createdBy",
-       created_at        AS "createdAt"`;
+       created_at        AS "createdAt",
+       deleted_at        AS "voidedAt",
+       deleted_by        AS "voidedBy"`;
 
 export async function insertPayment(
   db: Queryable,
@@ -93,6 +113,13 @@ export async function findPayment(
   return rows[0] ?? null;
 }
 
+/**
+ * The payments that still count, for the ledger.
+ *
+ * Voided ones are filtered out HERE and only here — this is what balances are
+ * built from, and a payment that was undone must not move anybody's number.
+ * The history uses listPaymentHistory instead, which keeps them.
+ */
 export async function listPayments(
   db: Queryable,
   groupId: string,
@@ -108,16 +135,47 @@ export async function listPayments(
   return rows;
 }
 
-/** Voids a payment. Like an expense, it is struck through, never removed. */
+/**
+ * Everything that ever happened, voided included.
+ *
+ * The whole point of the history tab: the balances say where things stand,
+ * this says what was done to get there — including what was undone. Somebody
+ * recording a payment and striking it through five minutes later leaves a
+ * trace instead of leaving nothing.
+ */
+export async function listPaymentHistory(
+  db: Queryable,
+  groupId: string,
+): Promise<PaymentRow[]> {
+  const { rows } = await db.query<PaymentRow>(
+    `SELECT ${PAYMENT_COLUMNS}
+       FROM payments
+      WHERE group_id = $1
+      ORDER BY paid_at DESC, created_at DESC`,
+    [groupId],
+  );
+
+  return rows;
+}
+
+/**
+ * Voids a payment. Like an expense, it is struck through, never removed —
+ * and now the row says who struck it through.
+ *
+ * `deleted_at IS NULL` in the WHERE is what makes this idempotent: voiding
+ * something already void changes no rows and answers false, so two people
+ * pressing the button at once cannot rewrite each other's author.
+ */
 export async function voidPayment(
   db: Queryable,
   groupId: string,
   paymentId: string,
+  voidedBy: string,
 ): Promise<boolean> {
   const { rowCount } = await db.query(
-    `UPDATE payments SET deleted_at = now()
+    `UPDATE payments SET deleted_at = now(), deleted_by = $3
       WHERE group_id = $1 AND id = $2 AND deleted_at IS NULL`,
-    [groupId, paymentId],
+    [groupId, paymentId, voidedBy],
   );
 
   return rowCount === 1;
