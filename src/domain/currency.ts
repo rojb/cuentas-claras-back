@@ -72,6 +72,36 @@ export function isSpendableCurrency(value: string): value is CurrencyCode {
 }
 
 /**
+ * Reads a decimal rate as the integer number of millionths this codebase
+ * stores. "6.96" becomes 6_960_000; "13.85" becomes 13_850_000.
+ *
+ * It takes a string and not a number on purpose. 13.85 * 1_000_000 is
+ * 13_849_999.999… in floating point, and the entire reason RATE_SCALE exists
+ * is that a rate never touches a float. The whole part and the fraction are
+ * sliced as text and shifted, so what comes out is exactly what was quoted.
+ *
+ * Anything with a sign, an exponent, more than six decimals or a stray
+ * character is refused rather than rounded: a rate feed that starts sending
+ * "6,96" or "6.96e0" is a bug to notice, not to paper over.
+ */
+export function parseRateToMicros(text: string): number {
+  const match = /^(\d+)(?:\.(\d{1,6}))?$/.exec(text.trim());
+  if (match === null) {
+    throw new Error(`cannot read "${text}" as a rate`);
+  }
+
+  const whole = Number(match[1] ?? '0');
+  const fraction = Number((match[2] ?? '').padEnd(6, '0'));
+  const micros = whole * RATE_SCALE + fraction;
+
+  if (!Number.isSafeInteger(micros) || micros <= 0) {
+    throw new Error(`rate "${text}" is out of range`);
+  }
+
+  return micros;
+}
+
+/**
  * Checks that a rate is usable, and that nobody is quoting a rate for USDT.
  *
  * The second half matters more than it looks. "1 USDT = 1,02 USDT" is not a

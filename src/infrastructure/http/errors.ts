@@ -41,6 +41,14 @@ export const conflict = (code: string, message: string) =>
 export const unprocessable = (code: string, message: string) =>
   new AppError(422, code, message);
 
+/**
+ * 503 means "we are fine, but something we depend on is not". The client
+ * should try again later, or carry on without whatever this was going to
+ * give it — which for a live exchange rate means letting the user type it.
+ */
+export const serviceUnavailable = (code: string, message: string) =>
+  new AppError(503, code, message);
+
 export const routeNotFound: RequestHandler = (req, res) => {
   res.status(404).json({
     error: { code: 'route_not_found', message: `${req.method} ${req.path} does not exist` },

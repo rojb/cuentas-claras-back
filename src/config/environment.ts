@@ -33,6 +33,13 @@ const environmentSchema = z.object({
         .map((origin) => origin.trim())
         .filter((origin) => origin.length > 0),
     ),
+
+  // The expense and payment forms fill "tipo de cambio" from Binance P2P so
+  // nobody types it. All three have defaults that work; override the URL only
+  // to point the fetch at a stub in a test.
+  BINANCE_P2P_URL: z.url().optional(),
+  RATE_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  RATE_FETCH_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 });
 
 export type Environment = z.infer<typeof environmentSchema>;

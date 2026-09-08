@@ -1,10 +1,20 @@
 import { loadEnvironment } from './config/environment.js';
+import { createRateService } from './application/rates/current-rate.js';
+import { createBinanceRateProvider } from './infrastructure/rates/binance-rate-provider.js';
 import { createPool } from './infrastructure/db/pool.js';
 import { createApp } from './infrastructure/http/app.js';
 
 const environment = loadEnvironment();
 
 const db = createPool(environment.DATABASE_URL);
+
+const rates = createRateService({
+  provider: environment.BINANCE_P2P_URL
+    ? createBinanceRateProvider(environment.BINANCE_P2P_URL)
+    : undefined,
+  ttlMs: environment.RATE_CACHE_TTL_SECONDS * 1000,
+  timeoutMs: environment.RATE_FETCH_TIMEOUT_MS,
+});
 
 const app = createApp(
   db,
@@ -13,6 +23,7 @@ const app = createApp(
     expiresInSeconds: environment.JWT_EXPIRES_IN_SECONDS,
   },
   environment.WEB_ORIGINS,
+  rates,
 );
 
 const server = app.listen(environment.PORT, () => {

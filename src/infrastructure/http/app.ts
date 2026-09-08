@@ -1,11 +1,16 @@
 import express, { type Express } from 'express';
 import type { Database } from '../db/pool.js';
 import type { TokenSettings } from '../../application/auth/tokens.js';
+import {
+  createRateService,
+  type RateService,
+} from '../../application/rates/current-rate.js';
 import { cors } from './cors.js';
 import { handleErrors, routeNotFound } from './errors.js';
 import { authRoutes } from './routes/auth-routes.js';
 import { groupRoutes } from './routes/group-routes.js';
 import { invitationRoutes } from './routes/invitation-routes.js';
+import { rateRoutes } from './routes/rate-routes.js';
 
 /**
  * Builds the HTTP app.
@@ -18,6 +23,7 @@ export function createApp(
   db: Database,
   tokens: TokenSettings,
   webOrigins: readonly string[] = [],
+  rates: RateService = createRateService(),
 ): Express {
   const app = express();
 
@@ -33,6 +39,10 @@ export function createApp(
 
   app.use('/auth', authRoutes(db, tokens));
   app.use('/groups', groupRoutes(db, tokens));
+
+  // Top level, not under /groups: the rate for a currency is the same for
+  // everyone, and the forms ask for it before an expense exists.
+  app.use('/rates', rateRoutes(tokens, rates));
 
   // Top level, not under /groups: an invitation is addressed to a person, and
   // its whole purpose is to exist before they can read the group.
